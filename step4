@@ -1,0 +1,19 @@
+# qc_trim.sh
+
+SAMPLE="sample1"
+R1="raw_reads/${SAMPLE}_R1.fastq.gz"
+R2="raw_reads/${SAMPLE}_R2.fastq.gz"
+
+# FastQC
+fastqc "$R1" "$R2" -o qc/ -t 8
+
+# Trimmomatic
+trimmomatic PE -threads 8 \
+    "$R1" "$R2" \
+    "raw_reads/${SAMPLE}_R1_trimmed.fastq.gz" "raw_reads/${SAMPLE}_R1_unpaired.fastq.gz" \
+    "raw_reads/${SAMPLE}_R2_trimmed.fastq.gz" "raw_reads/${SAMPLE}_R2_unpaired.fastq.gz" \
+    ILLUMINACLIP:/usr/share/trimmomatic/TruSeq3-PE.fa:2:30:10 \
+    LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36 \
+    2> logs/${SAMPLE}_trimmomatic.log
+
+echo "QC and trimming done."
