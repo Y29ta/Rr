@@ -1,0 +1,11 @@
+# star_index.sh
+
+STAR --runMode genomeGenerate \
+     --genomeDir reference/genome_index \
+     --genomeFastaFiles reference/antibody_plasmid.fa \
+     --runThreadN 8 \
+     --genomeSAindexNbases 7 \
+     --genomeChrBinNbits 11 \
+     --runLog logs/star_index.log
+
+echo "STAR index built successfully."
