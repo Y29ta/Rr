@@ -1,0 +1,47 @@
+# variant_calling.sh
+
+SAMPLE="sample1"
+BAM="aligned/${SAMPLE}_Aligned.sortedByCoord.out.bam"
+REF="reference/antibody_plasmid.fa"
+OUT="variants/${SAMPLE}"
+
+# Add read groups (required by GATK)
+picard AddOrReplaceReadGroups \
+    I=$BAM \
+    O="${OUT}_RG.bam" \
+    RGID=1 RGLB=lib1 RGPL=illumina RGPU=unit1 RGSM=$SAMPLE
+
+samtools index "${OUT}_RG.bam"
+
+# Mark duplicates
+picard MarkDuplicates \
+    I="${OUT}_RG.bam" \
+    O="${OUT}_dedup.bam" \
+    M="${OUT}_metrics.txt"
+
+samtools index "${OUT}_dedup.bam"
+
+# SplitNCigarReads (RNA-seq specific GATK step)
+gatk SplitNCigarReads \
+    -R $REF \
+    -I "${OUT}_dedup.bam" \
+    -O "${OUT}_split.bam"
+
+# HaplotypeCaller
+gatk HaplotypeCaller \
+    -R $REF \
+    -I "${OUT}_split.bam" \
+    -O "${OUT}_raw.vcf.gz" \
+    --dont-use-soft-clipped-bases \
+    --standard-min-confidence-threshold-for-calling 20
+
+# Filter variants
+gatk VariantFiltration \
+    -R $REF \
+    -V "${OUT}_raw.vcf.gz" \
+    -O "${OUT}_filtered.vcf.gz" \
+    --filter-expression "QD < 2.0" --filter-name "QD2" \
+    --filter-expression "FS > 30.0" --filter-name "FS30" \
+    --filter-expression "MQ < 40.0" --filter-name "MQ40"
+
+echo "Variant calling complete: ${OUT}_filtered.vcf.gz"
