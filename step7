@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+# visualize_antibody_rnaseq.py
+
+import os
+import pysam
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import seaborn as sns
+from collections import defaultdict
+
+# ── Configuration ────────────────────────────────────────────
+BAM_FILE    = "aligned/sample1_Aligned.sortedByCoord.out.bam"
+VCF_FILE    = "variants/sample1_filtered.vcf.gz"
+REF_FILE    = "reference/antibody_plasmid.fa"
+OUTPUT_DIR  = "results"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+CHAINS = {
+    "HeavyChain": {"color": "#2196F3", "label": "Heavy Chain (IgG1)"},
+    "LightChain":  {"color": "#E91E63", "label": "Light Chain (Kappa)"},
+}
+
+# ── 1. Coverage per base ──────────────────────────────────────
+def get_coverage(bam_path: str) -> dict[str, np.ndarray]:
+    coverage = {}
+    with pysam.AlignmentFile(bam_path, "rb") as bam:
+        for chrom in bam.references:
+            length = bam.get_reference_length(chrom)
+            cov    = np.zeros(length, dtype=np.int32)
+            for col in bam.pileup(chrom, 0, length, min_base_quality=20):
+                cov[col.reference_pos] = col.nsegments
+            coverage[chrom] = cov
+    return coverage
+
+# ── 2. Parse VCF ──────────────────────────────────────────────
+def parse_vcf(vcf_path: str) -> pd.DataFrame:
+    rows = []
+    try:
+        import gzip, re
+        opener = gzip.open if vcf_path.endswith(".gz") else open
+        with opener(vcf_path, "rt") as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                f = line.strip().split("\t")
+                if len(f) < 8:
+                    continue
+                chrom, pos, _, ref, alt, qual = f[0], int(f[1]), f[2], f[3], f[4], f[5]
+                chain_key = "HeavyChain" if "HeavyChain" in chrom else (
+                            "LightChain"  if "LightChain"  in chrom else "Unknown")
+                qual_val  = float(qual) if qual != "." else np.nan
+                rows.append({"chain": chain_key, "pos": pos,
+                             "ref": ref, "alt": alt, "qual": qual_val})
+    except FileNotFoundError:
+        print(f"VCF not found at {vcf_path}; generating synthetic data.")
+        np.random.seed(42)
+        for chain in ["HeavyChain", "LightChain"]:
+            for _ in range(np.random.randint(5, 20)):
+                rows.append({"chain": chain,
+                             "pos":  np.random.randint(1, 1200 if chain == "HeavyChain" else 700),
+                             "ref":  np.random.choice(["A","T","G","C"]),
+                             "alt":  np.random.choice(["A","T","G","C"]),
+                             "qual": np.random.uniform(20, 99)})
+    return pd.DataFrame(rows)
+
+# ── 3. Expression summary ─────────────────────────────────────
+def expression_summary(coverage: dict) -> pd.DataFrame:
+    rows = []
+    for chrom, cov in coverage.items():
+        chain_key = "HeavyChain" if "HeavyChain" in chrom else (
+                    "LightChain"  if "LightChain"  in chrom else "Unknown")
+        rows.append({"chain": chain_key, "chrom": chrom,
+                     "mean_cov": cov.mean(), "max_cov": cov.max(),
+                     "breadth":  (cov > 0).mean() * 100,
+                     "total_reads": cov.sum()})
+    return pd.DataFrame(rows)
+
+# ── 4. Plotting ───────────────────────────────────────────────
+def plot_all(coverage: dict, vcf_df: pd.DataFrame, expr_df: pd.DataFrame):
+    fig = plt.figure(figsize=(20, 22))
+    fig.suptitle("Antibody Plasmid RNA-Seq Analysis\nHeavy Chain & Light Chain",
+                 fontsize=16, fontweight="bold", y=0.98)
+    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.45, wspace=0.35)
+
+    # — Coverage tracks —
+    for ax_idx, (chrom, chain_info) in enumerate(zip(coverage.keys(), CHAINS.values())):
+        ax = fig.add_subplot(gs[0, ax_idx])
+        cov = coverage[chrom]
+        positions = np.arange(len(cov))
+
+        ax.fill_between(positions, cov, alpha=0.4, color=chain_info["color"])
+        ax.plot(positions, cov, color=chain_info["color"], lw=0.8)
+
+        # Moving average
+        window = max(1, len(cov) // 50)
+        ma = np.convolve(cov, np.ones(window)/window, mode="valid")
+        ax.plot(np.arange(window-1, len(cov)), ma, color="black", lw=1.5,
+                linestyle="--", label=f"MA({window}bp)")
+
+        ax.set_title(f"{chain_info['label']}\nCoverage Profile", fontsize=11)
+        ax.set_xlabel("Position (bp)")
+        ax.set_ylabel("Read Depth")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+
+    # — Variant positions —
+    for ax_idx, (chain_key, chain_info) in enumerate(CHAINS.items()):
+        ax = fig.add_subplot(gs[1, ax_idx])
+        sub = vcf_df[vcf_df["chain"] == chain_key]
+        if not sub.empty:
+            sc = ax.scatter(sub["pos"], sub["qual"],
+                            c=chain_info["color"], s=60, alpha=0.8, edgecolors="k", lw=0.5)
+            ax.axhline(30, color="red", linestyle="--", lw=1, label="QUAL=30 threshold")
+        ax.set_title(f"{chain_info['label']}\nVariant Quality vs Position", fontsize=11)
+        ax.set_xlabel("Position (bp)")
+        ax.set_ylabel("QUAL Score")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+
+    # — Expression bar chart —
+    ax_expr = fig.add_subplot(gs[2, 0])
+    colors  = [CHAINS.get(r["chain"], {}).get("color", "gray") for _, r in expr_df.iterrows()]
+    bars    = ax_expr.bar(expr_df["chain"], expr_df["mean_cov"], color=colors,
+                          edgecolor="black", linewidth=0.8)
+    ax_expr.bar_label(bars, fmt="%.1f", padding=3, fontsize=9)
+    ax_expr.set_title("Mean Coverage per Chain", fontsize=11)
+    ax_expr.set_ylabel("Mean Read Depth")
+    ax_expr.grid(axis="y", alpha=0.3)
+
+    # — Breadth of coverage —
+    ax_breadth = fig.add_subplot(gs[2, 1])
+    bars2 = ax_breadth.bar(expr_df["chain"], expr_df["breadth"], color=colors,
+                            edgecolor="black", linewidth=0.8)
+    ax_breadth.bar_label(bars2, fmt="%.1f%%", padding=3, fontsize=9)
+    ax_breadth.set_ylim(0, 110)
+    ax_breadth.set_title("Breadth of Coverage (>0x)", fontsize=11)
+    ax_breadth.set_ylabel("% Bases Covered")
+    ax_breadth.grid(axis="y", alpha=0.3)
+
+    # — Variant type distribution (stacked) —
+    ax_vtype = fig.add_subplot(gs[3, 0])
+    if not vcf_df.empty:
+        vcf_df["var_type"] = vcf_df.apply(
+            lambda r: "SNP" if len(r["ref"]) == 1 and len(r["alt"]) == 1
+                      else ("DEL" if len(r["ref"]) > len(r["alt"]) else "INS"), axis=1)
+        vtype_counts = vcf_df.groupby(["chain","var_type"]).size().unstack(fill_value=0)
+        vtype_counts.plot(kind="bar", ax=ax_vtype, colormap="Set2",
+                          edgecolor="black", linewidth=0.8)
+        ax_vtype.set_title("Variant Types per Chain", fontsize=11)
+        ax_vtype.set_ylabel("Count")
+        ax_vtype.set_xlabel("")
+        ax_vtype.tick_params(axis="x", rotation=0)
+        ax_vtype.legend(title="Variant", fontsize=8)
+        ax_vtype.grid(axis="y", alpha=0.3)
+
+    # — QUAL distribution KDE —
+    ax_qual = fig.add_subplot(gs[3, 1])
+    for chain_key, chain_info in CHAINS.items():
+        sub = vcf_df[vcf_df["chain"] == chain_key]["qual"].dropna()
+        if len(sub) > 1:
+            sub.plot.kde(ax=ax_qual, label=chain_info["label"],
+                         color=chain_info["color"], linewidth=2)
+    ax_qual.set_title("QUAL Score Distribution", fontsize=11)
+    ax_qual.set_xlabel("QUAL Score")
+    ax_qual.legend(fontsize=8)
+    ax_qual.grid(alpha=0.3)
+
+    out_path = os.path.join(OUTPUT_DIR, "antibody_rnaseq_report.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved → {out_path}")
+    plt.show()
+
+# ── Main ──────────────────────────────────────────────────────
+def main():
+    print("Loading BAM coverage...")
+    try:
+        coverage = get_coverage(BAM_FILE)
+    except (FileNotFoundError, ValueError):
+        print("BAM not found; generating synthetic coverage for demo.")
+        np.random.seed(0)
+        coverage = {
+            "HeavyChain": np.random.negative_binomial(5, 0.3, 1350).astype(np.int32),
+            "LightChain":  np.random.negative_binomial(4, 0.35, 660).astype(np.int32),
+        }
+
+    print("Parsing VCF...")
+    vcf_df  = parse_vcf(VCF_FILE)
+
+    print("Computing expression summary...")
+    expr_df = expression_summary(coverage)
+    expr_df.to_csv(os.path.join(OUTPUT_DIR, "expression_summary.csv"), index=False)
+    print(expr_df.to_string(index=False))
+
+    print("\nVariant summary:")
+    print(vcf_df.groupby("chain").size().rename("variant_count").to_string())
+
+    print("\nGenerating plots...")
+    plot_all(coverage, vcf_df, expr_df)
+
+if __name__ == "__main__":
+    main()
