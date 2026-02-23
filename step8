@@ -1,0 +1,14 @@
+#!/bin/bash
+# run_all.sh
+
+set -euo pipefail
+echo "=== Antibody RNA-Seq Pipeline ==="
+
+bash reference/create_antibody_reference.sh
+bash star_index.sh
+bash qc_trim.sh
+bash star_align.sh
+bash variant_calling.sh
+python3 visualize_antibody_rnaseq.py
+
+echo "=== Pipeline complete. Results in ./results/ ==="
