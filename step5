@@ -1,0 +1,30 @@
+# star_align.sh
+
+SAMPLE="sample1"
+
+STAR --runMode alignReads \
+     --genomeDir reference/genome_index \
+     --readFilesIn \
+         "raw_reads/${SAMPLE}_R1_trimmed.fastq.gz" \
+         "raw_reads/${SAMPLE}_R2_trimmed.fastq.gz" \
+     --readFilesCommand zcat \
+     --outSAMtype BAM SortedByCoordinate \
+     --outSAMattributes NH HI AS NM MD \
+     --outFileNamePrefix "aligned/${SAMPLE}_" \
+     --runThreadN 8 \
+     --outSAMstrandField intronMotif \
+     --alignSJoverhangMin 8 \
+     --alignSJDBoverhangMin 1 \
+     --outFilterMismatchNmax 999 \
+     --outFilterMismatchNoverReadLmax 0.04 \
+     --alignIntronMin 20 \
+     --alignIntronMax 1000000 \
+     --twopassMode Basic \
+     --outFilterMultimapNmax 20 \
+     2> logs/${SAMPLE}_star.log
+
+# Index BAM
+samtools index "aligned/${SAMPLE}_Aligned.sortedByCoord.out.bam"
+samtools flagstat "aligned/${SAMPLE}_Aligned.sortedByCoord.out.bam" > "qc/${SAMPLE}_flagstat.txt"
+
+echo "Alignment complete."
